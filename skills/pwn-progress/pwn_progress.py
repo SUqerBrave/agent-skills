@@ -232,9 +232,9 @@ def fetch(opener, url, data=None, timeout=30):
 
 
 def csrf_nonce(opener):
-    """POST 类 API 需要页面里内嵌的 CSRF nonce"""
+    """POST 类 API 需要页面里内嵌的 CSRF nonce (init 对象里的 'csrfNonce': "hex")"""
     _, page = fetch(opener, BASE + "/dojos")
-    m = re.search(r'csrfNonce\s*=\s*"([^"]+)"', page)
+    m = re.search(r"csrfNonce['\"]?\s*[:=]\s*['\"]([0-9a-f]+)['\"]", page)
     return m.group(1) if m else ""
 
 

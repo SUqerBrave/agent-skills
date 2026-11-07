@@ -28,12 +28,17 @@ python pwn_progress.py ssh [远程命令...]           # SSH 进当前试题容�
 
 1. `python pwn_progress.py next <dojo>` — 得到 module + challenge slug
 2. `python pwn_progress.py start <dojo> <module> <challenge>` — 启动容器（可能需 10-60s）
-3. `python pwn_progress.py ssh cat /flag` 或 `ssh ls /challenge` — 读试题描述里指点的路径；描述可先看模块页（或 `ssh cat /challenge/<module>/<challenge>/DESCRIPTION.md` 不行则网页查）
-4. 在容器内解题（挑战描述通常说明 flag 位置，如 /flag）
-5. `python pwn_progress.py solve <dojo> <module> <challenge> "pwn.college{...}"` — 提交
-6. 重复 next。start 是幂等的，换题先 start 新题即可
+3. `python pwn_progress.py ssh cat /challenge/<...>` 或读模块页描述，弄清题目要求
+4. 在容器内完成动作/解题，**基础题固定套路**：
+   - `/challenge/bin/<cmd>` 是 setuid 特权包装器（如 mv），按其报错提示执行正确动作
+   - 动作正确后运行 `/challenge/check`（setuid），它会校验并**直接打印 flag**：`pwn.college{...}`
+   - 高级题（pwn 类）：利用漏洞拿到 shell 后 `cat /flag`
+5. `python pwn_progress.py solve <dojo> <module> <challenge> "pwn.college{...}"` — 提交（返回 status: solved / already_solved / incorrect）
+6. 重复 next。start 幂等，换题先 start 新题即可
 
-注意：module/challenge 一律用 slug（小写连字符），以 `modules`/`challenges` 输出为准，不要从显示名猜。
+Windows Git Bash 跑 ssh 子命令时远程命令若以 `/` 开头会被 MSYS 路径转换破坏，加 `MSYS_NO_PATHCONV=1` 前缀。
+
+注意：module/challenge 一律用 slug（小写连字符），以 `modules`/`challenges` 输出为准，不要从显示名猜。SSH 私钥文件必须是 LF 行尾（CRLF 会导致 libcrypto 报错，`tr -d '\r'` 修复）。
 
 ## 登录与凭据（跨平台加密）
 
