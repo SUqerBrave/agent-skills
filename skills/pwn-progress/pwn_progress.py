@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
-"""pwn.college 学习进度查询（纯 Python，无浏览器依赖）
+"""pwn.college 学习助手（纯 Python，无浏览器依赖）
 
 用法:
-    python pwn_progress.py            # 所有有进度的 dojo 总览
-    python pwn_progress.py <dojo>     # 单个 dojo 的模块明细, 如 computing-101
-    python pwn_progress.py setup      # 交互式录入凭据 (DPAPI 加密存储)
+    python pwn_progress.py setup                      # 交互式录入凭据 (DPAPI 加密存储)
+    python pwn_progress.py                            # 所有有进度的 dojo 总览
+    python pwn_progress.py <dojo>                     # 单个 dojo 的模块明细
+    python pwn_progress.py modules <dojo>             # 模块列表(slug+进度)
+    python pwn_progress.py challenges <dojo> <module> # 试题列表+解题状态
+    python pwn_progress.py next <dojo>                # 按顺序找下一个未解试题
+    python pwn_progress.py start <dojo> <module> <challenge>      # 启动试题 workspace
+    python pwn_progress.py solve <dojo> <module> <challenge> <flag>  # 提交 flag
+    python pwn_progress.py ssh [命令...]              # SSH 进入当前试题容器
 
 配置目录: ~/.config/pwn-progress/ (可用环境变量 PWNC_CONF_DIR 覆盖)
-    config.json      普通设置 (user_agent)
+    config.json      普通设置 (user_agent, ssh_key/ssh_user/ssh_host 可选)
     凭据存储按平台: Windows=DPAPI 加密 (标准库, 当前用户绑定);
     Linux/macOS=系统钥匙串 (需 pip install keyring); 无钥匙串时=0600 明文文件;
     也可用环境变量 PWNC_USER / PWNC_PASS (优先级最高, 适合无界面/cron)
@@ -214,15 +220,35 @@ def make_opener(cfg):
     return opener, jar
 
 
-def fetch(opener, url, data=None):
+def fetch(opener, url, data=None, timeout=30):
     req = urllib.request.Request(url, data=data)
     try:
-        resp = opener.open(req, timeout=30)
+        resp = opener.open(req, timeout=timeout)
     except urllib.error.HTTPError as e:
         if e.code == 403:
             sys.exit(f"HTTP 403 (可能被 Cloudflare 拦截): 试试更新配置里的 user_agent\nURL: {url}")
         raise
     return resp.geturl(), resp.read().decode("utf-8", "replace")
+
+
+def csrf_nonce(opener):
+    """POST 类 API 需要页面里内嵌的 CSRF nonce"""
+    _, page = fetch(opener, BASE + "/dojos")
+    m = re.search(r'csrfNonce\s*=\s*"([^"]+)"', page)
+    return m.group(1) if m else ""
+
+
+def api_post(opener, path, payload, timeout=180):
+    nonce = csrf_nonce(opener)
+    req = urllib.request.Request(
+        BASE + path, data=json.dumps(payload).encode(),
+        headers={"CSRF-Token": nonce, "Accept": "application/json",
+                 "Content-Type": "application/json"}, method="POST")
+    try:
+        resp = opener.open(req, timeout=timeout)
+        return json.loads(resp.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        return {"success": False, "error": f"HTTP {e.code} {e.reason}"}
 
 
 def logged_in(opener):
@@ -316,16 +342,118 @@ def print_detail(dojo, rows):
         print(f"  {r['module']:<{width}}{r['solved']:>4}/{r['total']:<4}{mark}")
 
 
+def parse_challenges(page):
+    rows = []
+    for m in re.finditer(r'<h4[^>]*class="[^"]*challenge-name[^"]*"[^>]*>(.*?)</h4>', page, re.S):
+        block = m.group(0)
+        cid = re.search(r'data-challenge-id="([^"]*)"', block)
+        if not cid:
+            continue
+        name = re.search(r'data-challenge-name="([^"]*)"', block)
+        rows.append({
+            "id": cid.group(1),
+            "name": html.unescape(name.group(1)) if name else cid.group(1),
+            "solved": "challenge-solved" in block,
+        })
+    return rows
+
+
+def require_page(page, what):
+    if "<h1>404</h1>" in page:
+        sys.exit(f"404: {what} 不存在 (注意 module/challenge 用的是 slug, 可先用 "
+                 f"'python pwn_progress.py modules <dojo>' 查看正确 slug)")
+
+
+def print_challenges(dojo, module, rows):
+    done = sum(r["solved"] for r in rows)
+    print(f"{dojo}/{module}  ({done}/{len(rows)} 已解)\n")
+    for r in rows:
+        mark = "[x]" if r["solved"] else "[ ]"
+        print(f"  {mark} {r['id']:<32} {r['name']}")
+
+
+def cmd_next(opener, dojo):
+    """按官方顺序找第一个未解试题"""
+    _, page = fetch(opener, f"{BASE}/dojo/{dojo}")
+    require_page(page, f"dojo '{dojo}'")
+    modules = parse_modules(page, dojo)
+    if not modules:
+        sys.exit(f"未解析到模块: dojo '{dojo}'")
+    for mod in modules:
+        if mod["total"] and mod["solved"] >= mod["total"]:
+            continue  # 已完成
+        _, mpage = fetch(opener, BASE + mod["url"])
+        chals = parse_challenges(mpage)
+        unsolved = next((c for c in chals if not c["solved"]), None)
+        if unsolved:
+            print(f"dojo:   {dojo}")
+            print(f"module: {mod['url'].rstrip('/').rsplit('/', 1)[-1]}")
+            print(f"next:   {unsolved['id']}  ({unsolved['name']})")
+            print(f"\n启动: python pwn_progress.py start {dojo} "
+                  f"{mod['url'].rstrip('/').rsplit('/', 1)[-1]} {unsolved['id']}")
+            return
+    print(f"dojo '{dojo}' 全部完成 🎉")
+
+
+def cmd_ssh(args):
+    cfg = load_config()
+    key = os.path.expanduser(cfg.get("ssh_key", "~/.ssh/pwn.college.key"))
+    if not os.path.exists(key):
+        sys.exit(f"SSH 私钥不存在: {key}\n"
+                 "先在 pwn.college Settings -> SSH Key 添加对应公钥, "
+                 "或在 config.json 里用 ssh_key 字段指定私钥路径")
+    host = f"{cfg.get('ssh_user', 'hacker')}@{cfg.get('ssh_host', 'dojo.pwn.college')}"
+    cmd = ["ssh", "-i", key, "-o", "StrictHostKeyChecking=accept-new", host] + list(args)
+    code = subprocess.call(cmd)
+    sys.exit(code)
+
+
 def main():
     args = sys.argv[1:]
     if args and args[0] == "setup":
         cmd_setup()
+        return
+    if args and args[0] == "ssh":
+        cmd_ssh(args[1:])
         return
     dojo = args[0] if args else ""
     cfg = load_config()
     opener, jar = make_opener(cfg)
     if not logged_in(opener):
         login(opener, jar, load_credentials(cfg))
+    if dojo in ("modules", "challenges", "next", "start", "solve"):
+        if dojo == "modules":
+            _, page = fetch(opener, f"{BASE}/dojo/{args[1]}")
+            require_page(page, f"dojo '{args[1]}'")
+            rows = parse_modules(page, args[1])
+            for r in rows:
+                mark = " DONE" if r["total"] and r["solved"] == r["total"] else ""
+                print(f"  {r['module']:<36}{r['solved']:>4}/{r['total']:<4}{mark}  {r['url']}")
+        elif dojo == "challenges":
+            _, page = fetch(opener, f"{BASE}/{args[1]}/{args[2]}/")
+            require_page(page, f"module '{args[1]}/{args[2]}'")
+            print_challenges(args[1], args[2], parse_challenges(page))
+        elif dojo == "next":
+            cmd_next(opener, args[1])
+        elif dojo == "start":
+            result = api_post(opener, "/pwncollege_api/v1/docker",
+                              {"dojo": args[1], "module": args[2], "challenge": args[3]})
+            if result.get("success"):
+                print(f"已启动 {args[1]}/{args[2]}/{args[3]}\n"
+                      f"进入: python pwn_progress.py ssh  (远程执行: ssh 后直接跟命令)")
+            else:
+                sys.exit(f"启动失败: {result.get('error', result)}")
+        elif dojo == "solve":
+            if len(args) < 5:
+                sys.exit("用法: python pwn_progress.py solve <dojo> <module> <challenge> <flag>")
+            result = api_post(opener, f"/pwncollege_api/v1/dojos/{args[1]}/{args[2]}/{args[3]}/solve",
+                              {"submission": args[4]}, timeout=30)
+            status = result.get("status", "error")
+            msg = {"correct": "✅ 正确, 已记录!",
+                   "already_solved": "该试题此前已解决",
+                   "incorrect": "❌ 错误的 flag"}.get(status, result.get("error", result))
+            print(f"{args[1]}/{args[2]}/{args[3]}: {msg}")
+        return
     if dojo:
         _, page = fetch(opener, f"{BASE}/dojo/{dojo}")
         rows = parse_modules(page, dojo)

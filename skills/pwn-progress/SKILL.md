@@ -1,51 +1,56 @@
 ---
 name: pwn-progress
-description: 查询用户在 pwn.college 的学习进度。当用户提到 pwn.college、dojo 进度、学习进度、刷题进度、解题情况、CTF 学习时使用。纯 Python 实现，凭据 DPAPI/钥匙串加密存储，支持自动登录，无需浏览器在线。
-allowed-tools: Bash(python:*), Read
+description: pwn.college 学习助手。当用户提到 pwn.college、dojo 进度、学习进度、刷题进度、解题情况、CTF 学习、做pwn题、启动试题、开始挑战时使用。纯 Python 实现：查进度、列试题、启动 workspace、提交 flag、SSH 进容器，支持 agent 式全自动学习闭环。
+allowed-tools: Bash(python:*), Bash(ssh:*), Read
 ---
 
-# pwn.college 学习进度查询（纯 Python）
+# pwn.college 学习助手（纯 Python）
 
-单文件脚本 `pwn_progress.py`（与本 SKILL.md 同目录，仅用标准库）。原理：进度由服务端渲染在 HTML 里（无进度 API），脚本用 urllib 带登录 cookie 抓 `/dojos` 和 `/dojo/<id>` 页面并解析。
+单文件脚本 `pwn_progress.py`（与本 SKILL.md 同目录，仅用标准库）。原理：进度与试题均为服务端渲染 HTML（无对应 API），脚本用 urllib 带登录 cookie 抓取解析；启动/提交走 `/pwncollege_api/v1/`（带页面内嵌 CSRF nonce）。
 
-## 用法
+## 命令一览
 
 ```sh
-python pwn_progress.py setup          # 首次: 交互式录入凭据 (密码不回显)
-python pwn_progress.py                # 所有有进度的 dojo 总览（按百分比排序）
-python pwn_progress.py computing-101  # 单个 dojo 的模块明细
+python pwn_progress.py                            # dojo 总览（完成百分比排序）
+python pwn_progress.py setup                      # 首次: 交互式录凭据 (DPAPI/钥匙串加密)
+python pwn_progress.py <dojo>                     # 模块明细, 如 linux-luminarium
+python pwn_progress.py modules <dojo>             # 模块 slug 列表（模块名≠slug, 引用这里）
+python pwn_progress.py challenges <dojo> <module> # 试题列表 [x]/[ ] 解题状态
+python pwn_progress.py next <dojo>                # 按官方顺序下一个未解试题
+python pwn_progress.py start <dojo> <module> <challenge>         # 启动 workspace 容器
+python pwn_progress.py solve <dojo> <module> <challenge> <flag> # 提交 flag
+python pwn_progress.py ssh [远程命令...]           # SSH 进当前试题容器
 ```
 
-## 凭据存储（跨平台，绝不进 SKILL.md / 模型上下文）
+## agent 式学习闭环
 
-配置目录 `~/.config/pwn-progress/`（可用 `PWNC_CONF_DIR` 覆盖），存储后端按平台自动选择：
+用户说"继续学/做下一题"时按此流程：
+
+1. `python pwn_progress.py next <dojo>` — 得到 module + challenge slug
+2. `python pwn_progress.py start <dojo> <module> <challenge>` — 启动容器（可能需 10-60s）
+3. `python pwn_progress.py ssh cat /flag` 或 `ssh ls /challenge` — 读试题描述里指点的路径；描述可先看模块页（或 `ssh cat /challenge/<module>/<challenge>/DESCRIPTION.md` 不行则网页查）
+4. 在容器内解题（挑战描述通常说明 flag 位置，如 /flag）
+5. `python pwn_progress.py solve <dojo> <module> <challenge> "pwn.college{...}"` — 提交
+6. 重复 next。start 是幂等的，换题先 start 新题即可
+
+注意：module/challenge 一律用 slug（小写连字符），以 `modules`/`challenges` 输出为准，不要从显示名猜。
+
+## 登录与凭据（跨平台加密）
+
+配置目录 `~/.config/pwn-progress/`（`PWNC_CONF_DIR` 可覆盖）：
 
 | 平台 | 后端 | 依赖 |
 |---|---|---|
-| Windows | DPAPI 加密 `credentials.bin`（绑定当前用户，拷走无法解密） | 无（ctypes 调 crypt32） |
-| Linux/macOS 桌面 | 系统钥匙串（GNOME Keyring/KWallet/Keychain） | `pip install keyring` |
-| 无钥匙串 headless | 0600 权限明文文件（setup 时会警告），或环境变量 | 无 |
+| Windows | DPAPI 加密 `credentials.bin`（绑定当前用户） | 无 |
+| Linux/macOS 桌面 | 系统钥匙串 | `pip install keyring` |
+| headless | `PWNC_USER`/`PWNC_PASS` 环境变量（最高优先级）或 0600 明文文件 | 无 |
 
-环境变量 `PWNC_USER` / `PWNC_PASS` 优先级最高（适合 cron/CI）。登录态 cookie 缓存于 `cookies.txt`（POSIX 下自动 chmod 600），失效自动重登。
+登录态 cookie 缓存 `cookies.txt`，失效自动重登。`user_agent` 用用户浏览器真实 UA 防 Cloudflare，缺省自动探测缓存，403 时提示更新。
 
-安全约定：凭据永远只经用户手输给脚本，agent 不索要、不回显、不写入任何文件；SKILL.md 与对话中不得出现明文凭据。
+SSH：默认 `~/.ssh/pwn.college.key` → `hacker@dojo.pwn.college:22`，可在 config.json 用 `ssh_key`/`ssh_user`/`ssh_host` 覆盖。SSH 前必须先 `start` 试题（容器绑定当前激活试题）。
 
-## 登录与网络
-
-- 登录态探测：`users/me` API 返回 JSON 才算已登录；未登录自动走 `/login` 表单（GET 取 CSRF nonce → POST 凭据）。
-- `user_agent` 用用户浏览器的真实 UA 避免 Cloudflare 拦截；配置缺省时尝试 `opencli browser eval navigator.userAgent` 取一次并缓存，无浏览器则用兜底值。被 403 时提示更新 UA。
-
-## 判读
-
-- 总览只显示有进度的 dojo（progress 为 null 表示从未做过）。
-- 模块明细里 `solved == total` 标记 DONE；可结合总览推荐下一步（官方顺序 Getting Started → Core Material）。
-- dojo id 从总览 url 字段取（`/dojo/<id>`）。
+安全约定：凭据只经用户手输给脚本，agent 不索要、不回显、不写入任何文件。
 
 ## 手动后备（浏览器在线时）
 
-```sh
-opencli browser open "https://pwn.college/dojos" --session pwnc
-opencli browser eval "(() => [...document.querySelectorAll('main a[href^=\"/dojo/\"]')].map(a => { const h = a.querySelector('h4'); if (!h) return null; const pct = [...a.querySelectorAll('span')].map(s => s.textContent.trim()).find(t => t.endsWith('%')); return { dojo: h.textContent.trim(), progress: pct || null }; }).filter(Boolean))()" --session pwnc
-```
-
-模块明细同理：打开 `/dojo/<id>` 后取每个 `main ul a` 内 `h4` 与 `(\d+)\s*/\s*(\d+)`。
+进度/试题也可用 opencli 在已登录页面解析（`opencli browser eval` + DOM 查询）；试题元素特征：`h4.challenge-name[data-challenge-id]` + 内层 `i.challenge-solved`。
