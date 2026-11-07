@@ -1,0 +1,14 @@
+# 凭据与会话文件 —— 永不提交
+config.json
+cookies.txt
+credentials.bin
+*.session
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# 系统杂项
+.DS_Store
+Thumbs.db
