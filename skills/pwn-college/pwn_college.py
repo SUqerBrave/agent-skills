@@ -2,15 +2,15 @@
 """pwn.college 学习助手（纯 Python，无浏览器依赖）
 
 用法:
-    python pwn_progress.py setup                      # 交互式录入凭据 (DPAPI 加密存储)
-    python pwn_progress.py                            # 所有有进度的 dojo 总览
-    python pwn_progress.py <dojo>                     # 单个 dojo 的模块明细
-    python pwn_progress.py modules <dojo>             # 模块列表(slug+进度)
-    python pwn_progress.py challenges <dojo> <module> # 试题列表+解题状态
-    python pwn_progress.py next <dojo>                # 按顺序找下一个未解试题
-    python pwn_progress.py start <dojo> <module> <challenge>      # 启动试题 workspace
-    python pwn_progress.py solve <dojo> <module> <challenge> <flag>  # 提交 flag
-    python pwn_progress.py ssh [命令...]              # SSH 进入当前试题容器
+    python pwn_college.py setup                      # 交互式录入凭据 (DPAPI 加密存储)
+    python pwn_college.py                            # 所有有进度的 dojo 总览
+    python pwn_college.py <dojo>                     # 单个 dojo 的模块明细
+    python pwn_college.py modules <dojo>             # 模块列表(slug+进度)
+    python pwn_college.py challenges <dojo> <module> # 试题列表+解题状态
+    python pwn_college.py next <dojo>                # 按顺序找下一个未解试题
+    python pwn_college.py start <dojo> <module> <challenge>      # 启动试题 workspace
+    python pwn_college.py solve <dojo> <module> <challenge> <flag>  # 提交 flag
+    python pwn_college.py ssh [命令...]              # SSH 进入当前试题容器
 
 配置目录: ~/.config/pwn-progress/ (可用环境变量 PWNC_CONF_DIR 覆盖)
     config.json      普通设置 (user_agent, ssh_key/ssh_user/ssh_host 可选)
@@ -142,7 +142,7 @@ def load_credentials(cfg):
                 return json.loads(dpapi_unprotect(blob))
             except OSError:
                 sys.exit("凭据解密失败 (DPAPI 与当前 Windows 用户/机器绑定)。\n"
-                         "请重新运行: python pwn_progress.py setup")
+                         "请重新运行: python pwn_college.py setup")
     else:
         kr = _keyring_backend()
         if kr:
@@ -153,7 +153,7 @@ def load_credentials(cfg):
             with open(CRED_PATH, encoding="utf-8") as f:
                 return json.loads(f.read())
     if cfg.get("username") and cfg.get("password"):
-        print("提示: 检测到 config.json 明文凭据, 建议运行 python pwn_progress.py setup 加密",
+        print("提示: 检测到 config.json 明文凭据, 建议运行 python pwn_college.py setup 加密",
               file=sys.stderr)
         return {"username": cfg["username"], "password": cfg["password"]}
     return None
@@ -258,7 +258,7 @@ def logged_in(opener):
 
 def login(opener, jar, creds):
     if not creds:
-        sys.exit("未登录且没有凭据。请先运行: python pwn_progress.py setup")
+        sys.exit("未登录且没有凭据。请先运行: python pwn_college.py setup")
     _, page = fetch(opener, BASE + "/login")
     tag = re.search(r'<input[^>]*name="nonce"[^>]*>', page)
     if not tag:
@@ -361,7 +361,7 @@ def parse_challenges(page):
 def require_page(page, what):
     if "<h1>404</h1>" in page:
         sys.exit(f"404: {what} 不存在 (注意 module/challenge 用的是 slug, 可先用 "
-                 f"'python pwn_progress.py modules <dojo>' 查看正确 slug)")
+                 f"'python pwn_college.py modules <dojo>' 查看正确 slug)")
 
 
 def print_challenges(dojo, module, rows):
@@ -389,7 +389,7 @@ def cmd_next(opener, dojo):
             print(f"dojo:   {dojo}")
             print(f"module: {mod['url'].rstrip('/').rsplit('/', 1)[-1]}")
             print(f"next:   {unsolved['id']}  ({unsolved['name']})")
-            print(f"\n启动: python pwn_progress.py start {dojo} "
+            print(f"\n启动: python pwn_college.py start {dojo} "
                   f"{mod['url'].rstrip('/').rsplit('/', 1)[-1]} {unsolved['id']}")
             return
     print(f"dojo '{dojo}' 全部完成 🎉")
@@ -440,12 +440,12 @@ def main():
                               {"dojo": args[1], "module": args[2], "challenge": args[3]})
             if result.get("success"):
                 print(f"已启动 {args[1]}/{args[2]}/{args[3]}\n"
-                      f"进入: python pwn_progress.py ssh  (远程执行: ssh 后直接跟命令)")
+                      f"进入: python pwn_college.py ssh  (远程执行: ssh 后直接跟命令)")
             else:
                 sys.exit(f"启动失败: {result.get('error', result)}")
         elif dojo == "solve":
             if len(args) < 5:
-                sys.exit("用法: python pwn_progress.py solve <dojo> <module> <challenge> <flag>")
+                sys.exit("用法: python pwn_college.py solve <dojo> <module> <challenge> <flag>")
             result = api_post(opener, f"/pwncollege_api/v1/dojos/{args[1]}/{args[2]}/{args[3]}/solve",
                               {"submission": args[4]}, timeout=30)
             status = result.get("status", "error")
